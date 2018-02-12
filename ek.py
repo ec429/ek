@@ -210,7 +210,8 @@ class Launch(object):
         
         -1 = Mission failure (all stages worked but design error killed mission)
         0 = Success
-        positive = number of failing stage"""
+        positive = number of failing stage
+        tuple: [0] as above, remainder are further failing stages"""
         self.name = name
         self.date = when
         self.lv = lv
