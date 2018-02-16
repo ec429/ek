@@ -688,6 +688,61 @@ def test_html(db):
     with open('html/vef.html', 'w') as vef:
         vef.write(html.render_engine_families(2, 1, True))
 
+def serve_web(db, port):
+    from twisted.web import server, resource, static
+    from twisted.internet import reactor, endpoints
+    class Page(resource.Resource):
+        """Abstract base class for HTML pages."""
+        isLeaf = True
+
+        def flatten_args(self, request):
+            for k in request.args.keys():
+                v = request.args[k]
+                if isinstance(v, list):
+                    l = len(v)
+                    if l == 1:
+                        request.args[k] = v[0]
+                    elif not l:
+                        del request.args[k]
+
+    class Index(Page):
+        def render_GET(self, request):
+            self.flatten_args(request)
+            page = t.html[t.head[t.title['Encyclopædia Kerbonautica']],
+                          t.body[t.h1['Encyclopædia Kerbonautica'],
+                                 t.ul[t.li[t.a(href='lpy')['Launches per year']],
+                                      t.li[t.a(href='lvf')['Launch-vehicle families']],
+                                      t.li[t.a(href='bsf')['Booster stages']],
+                                      t.li[t.a(href='vsf')['Upper stages']],
+                                      t.li[t.a(href='bef')['Atmospheric engines']],
+                                      t.li[t.a(href='vef')['Vacuum engines']],
+                                      ]
+                                 ]]
+            request.setHeader("content-type", "text/html; charset=utf-8")
+            return flatten(page)
+
+    class Renderer(Page):
+        def __init__(self, func, *args, **kwargs):
+            self.func = func
+            self.args = args
+            self.kwargs = kwargs
+        def render_GET(self, request):
+            request.setHeader("content-type", "text/html; charset=utf-8")
+            return flatten(self.func(*self.args, **self.kwargs))
+
+    rend = HtmlRenderer(db)
+    root = resource.Resource()
+    root.putChild('', Index())
+    root.putChild('lpy', Renderer(rend.render_launches_per_year, 2))
+    root.putChild('lvf', Renderer(rend.render_lv_families, 2, 1))
+    root.putChild('bsf', Renderer(rend.render_stage_families, 2, 1, vac=False))
+    root.putChild('vsf', Renderer(rend.render_stage_families, 2, 1, vac=True))
+    root.putChild('bef', Renderer(rend.render_engine_families, 2, 1, vac=False))
+    root.putChild('vef', Renderer(rend.render_engine_families, 2, 1, vac=True))
+    ep = "tcp:%d"%(port,)
+    endpoints.serverFromString(reactor, ep).listen(server.Site(root))
+    reactor.run()
+
 def test_text(db):
     # Render text tables
     rend = TextRenderer(db)
