@@ -8,6 +8,7 @@ from datetime import date
 from nevow import tags as t
 from nevow.flat import flatten
 import nevow.entities
+import urllib
 
 class EngineFamily(object):
     def __init__(self, name, description, vac=False):
@@ -333,8 +334,7 @@ class Database(object):
         for c,v in sorted(tree.items(), key=lambda (k,i): data[k]['first']):
             l.append((c, 0))
             chld = cls.counted_flatten_tree(v, data)
-            if len(chld) > 1:
-                l.extend((k, i+1) for (k, i) in chld)
+            l.extend((k, i+1) for (k, i) in chld)
         return l
     @property
     def lv_family_tree(self):
@@ -395,6 +395,11 @@ class Database(object):
                     leaves.add(leaf.category)
                     changes = True
         return sorted(leaves, key=lambda d:d.sort)
+    def filter_launches(self, lv=None, stage=None, engine=None):
+        if stage or engine:
+            raise NotImplementedError('stage or engine filtering')
+        lvf = self.flatten_tree({lv: self.lv_tree[lv]}) if lv else None
+        return filter(lambda l: lvf is None or l.lv.name in lvf, self.launches)
 
 class Renderer(object):
     def __init__(self, db):
@@ -569,14 +574,17 @@ class HtmlRenderer(Renderer):
         .major { font-weight: bold; border-top: 2px solid black; }
     """
     def wrap_page(self, title, body):
-        page = t.html[t.head[t.title[title], t.style[self.stylesheet]],
+        page = t.html[t.head[t.title[title + ' - Encyclopædia Kerbonautica'], t.style[self.stylesheet]],
                       t.body[t.h1[title], body]]
         return flatten(page)
-    def render_lv_families(self, maxdepth, maxdest):
+    def table_lv_families(self, maxdepth, maxdest, root=None):
         dests = self.db.coalesce_dests(self.db.lvs.values(), maxdest)
         head1 = t.tr[t.th(rowspan=2)["Name"], t.th(colspan=2)["Flight dates"], t.th(rowspan=2)["Success"], t.th(colspan=2)["Failed"], t.th(colspan=len(dests))["Destinations"]]
         head2 = t.tr[t.th["First"], t.th["Last"], t.th["Stage"], t.th["Mission"], [t.th(Class='num')[d.abbr] for d in dests]]
-        tree = self.db.lv_family_tree
+        if root:
+            tree = {root: self.db.lv_tree[root]}
+        else:
+            tree = self.db.lv_family_tree
         rows = []
         lvs = dict((name, self.db.lv_family(name)) for name in self.db.lvs)
         for name, depth in self.db.counted_flatten_tree(tree, lvs):
@@ -585,8 +593,9 @@ class HtmlRenderer(Renderer):
                 def render_d(d):
                     c = sum(lv['dest'].get(n, 0) for n in self.db.dest_tree.keys() if n.member(d) and (n == d or n not in dests))
                     return str(c) if c else '-'
+                name = lv['lv'].name
                 rows.append(t.tr(Class='' if depth else 'major')[
-                        t.td[[nevow.entities.nbsp] * depth, lv['lv'].name],
+                        t.td[[nevow.entities.nbsp] * depth, t.a(href='lv?name='+urllib.quote(name))[name]],
                         t.td(Class='date')[lv['first'].isoformat()],
                         t.td(Class='date')[lv['last'].isoformat()],
                         t.td(Class='num')[str(lv['success'] or '-')],
@@ -594,8 +603,9 @@ class HtmlRenderer(Renderer):
                         t.td(Class='num')[str(lv['mission_failure'] or '-')],
                         [t.td(Class='num')[render_d(d)] for d in dests],
                         ])
-        tbl = t.table[head1, head2, rows]
-        return self.wrap_page("LV families", tbl)
+        return t.table[head1, head2, rows]
+    def render_lv_families(self, maxdepth, maxdest):
+        return self.wrap_page("LV families", self.table_lv_families(maxdepth, maxdest))
     def render_stage_families(self, maxdepth, maxdest, vac=None):
         dests = self.db.coalesce_dests(self.db.stages.values(), maxdest)
         head1 = t.tr[t.th(rowspan=2)["Name"], t.th(rowspan=2)["Engine"], t.th(colspan=2)["Flight dates"], t.th(rowspan=2)["Success"], t.th(colspan=3)["Failed"], t.th(colspan=len(dests))["Destinations"]]
@@ -668,6 +678,41 @@ class HtmlRenderer(Renderer):
             rows.append(t.tr[t.td(Class='date')[year], t.td(Class='num')[len(launches)], [t.td(Class='num')[render_d(d)] for d in dests]])
         tbl = t.table[head1, head2, rows]
         return self.wrap_page("Launches per year", tbl)
+    def table_launch_history(self, lv=None):
+        head = t.tr[t.th["Name"], t.th["Date"], t.th["LV"], t.th["Payload"], t.th["Destination"], t.th["Result"]]
+        rows = []
+        for launch in self.db.filter_launches(lv=lv):
+            def render_result(result):
+                if isinstance(result, tuple):
+                    return '%s + stage %s failure' % (render_result(result[0]), ', '.join(map(str, result[1:])))
+                if result == 0:
+                    return 'Success'
+                if result < 0:
+                    return 'Mission Failure'
+                return 'Stage %d Failure' % (result,)
+            rows.append(t.tr[t.td[launch.name],
+                             t.td(Class='date')[launch.date.isoformat()],
+                             t.td[t.a(href='lv?name='+urllib.quote(launch.lv.name))[launch.lv.name]],
+                             t.td[launch.payload.name if launch.payload else 'None'],
+                             t.td[launch.dest.name],
+                             t.td[render_result(launch.result)],
+                             ])
+        return t.table[head, rows]
+    def render_lv_info(self, name=None):
+        if name not in self.db.lvs:
+            raise Exception("No such LV '%s'"%(name,))
+        lv = self.db.lvs[name]['lv']
+        lvs = dict((name, self.db.lv_family(name)) for name in self.db.lvs)
+        title = "LV '%s'"%(lv.name,)
+        blocks = []
+        blocks.append(t.p[lv.description])
+        blocks.append(t.h2["Stages"])
+        blocks.append(t.ol[[t.li[stage.name] for stage in lv.stages]])
+        blocks.append(t.h2["Summary of Launches"])
+        blocks.append(self.table_lv_families(2, 1, root=name))
+        blocks.append(t.h2["Full Launch History"])
+        blocks.append(self.table_launch_history(lv=name))
+        return self.wrap_page(title, blocks)
 
 def test_html(db):
     # Render HTML tables
@@ -705,6 +750,11 @@ def serve_web(db, port):
                     elif not l:
                         del request.args[k]
 
+        def error(self, msg):
+            return t.html[t.head[t.title['Encyclopædia Kerbonautica']],
+                          t.body[t.h1["Error"],
+                                 t.h2[msg]]]
+
     class Index(Page):
         def render_GET(self, request):
             self.flatten_args(request)
@@ -728,7 +778,35 @@ def serve_web(db, port):
             self.kwargs = kwargs
         def render_GET(self, request):
             request.setHeader("content-type", "text/html; charset=utf-8")
-            return flatten(self.func(*self.args, **self.kwargs))
+            try:
+                return flatten(self.func(*self.args, **self.kwargs))
+            except Exception as e:
+                return flatten(self.error(e.message))
+
+    class PageWithArgs(Page):
+        def content(self, **kwargs):
+            raise NotImplementedError()
+        def render_GET(self, request):
+            self.flatten_args(request)
+            debug = request.args.pop('debug', 0)
+            try:
+                page = self.content(**request.args)
+            except Exception as e:
+                if debug:
+                    raise
+                return flatten(self.error(e.message))
+            request.setHeader("content-type", "text/html; charset=utf-8")
+            return flatten(page)
+
+    class RendererWithArgs(PageWithArgs):
+        def __init__(self, func, *args, **kwargs):
+            self.func = func
+            self.args = args
+            self.kwargs = kwargs
+        def content(self, **kwargs):
+            k = dict(kwargs)
+            k.update(self.kwargs)
+            return self.func(*self.args, **k)
 
     rend = HtmlRenderer(db)
     root = resource.Resource()
@@ -739,6 +817,7 @@ def serve_web(db, port):
     root.putChild('vsf', Renderer(rend.render_stage_families, 2, 1, vac=True))
     root.putChild('bef', Renderer(rend.render_engine_families, 2, 1, vac=False))
     root.putChild('vef', Renderer(rend.render_engine_families, 2, 1, vac=True))
+    root.putChild('lv', RendererWithArgs(rend.render_lv_info))
     ep = "tcp:%d"%(port,)
     endpoints.serverFromString(reactor, ep).listen(server.Site(root))
     reactor.run()
