@@ -5,6 +5,9 @@
 Launch library and vehicle/stage/engine database."""
 
 from datetime import date
+from nevow import tags as t
+from nevow.flat import flatten
+import nevow.entities
 
 class EngineFamily(object):
     def __init__(self, name, description, vac=False):
@@ -398,6 +401,12 @@ class Renderer(object):
         self.db = db
     def render_lv_families(self):
         raise NotImplementedError()
+    def render_stage_families(self, maxdepth, maxdest, vac=None):
+        raise NotImplementedError()
+    def render_engine_families(self, maxdepth, maxdest, vac=None):
+        raise NotImplementedError()
+    def render_launches_per_year(self, maxdest):
+        raise NotImplementedError()
 
 class TextRenderer(Renderer):
     def table(self, cols, rows):
@@ -549,3 +558,151 @@ class TextRenderer(Renderer):
                 row['dest'][launch.dest] = row['dest'].get(launch.dest, 0) + 1
             rows.append(row)
         return self.table(cols, rows)
+
+class HtmlRenderer(Renderer):
+    stylesheet = """
+        table { border-collapse: collapse; border: 2px solid black; }
+        th { border-top: 2px solid black; }
+        td, th { border: 1px solid black; }
+        td.num, th.num { text-align: right; }
+        td.date { font-family: monospace; }
+        .major { font-weight: bold; border-top: 2px solid black; }
+    """
+    def wrap_page(self, title, body):
+        page = t.html[t.head[t.title[title], t.style[self.stylesheet]],
+                      t.body[t.h1[title], body]]
+        return flatten(page)
+    def render_lv_families(self, maxdepth, maxdest):
+        dests = self.db.coalesce_dests(self.db.lvs.values(), maxdest)
+        head1 = t.tr[t.th(rowspan=2)["Name"], t.th(colspan=2)["Flight dates"], t.th(rowspan=2)["Success"], t.th(colspan=2)["Failed"], t.th(colspan=len(dests))["Destinations"]]
+        head2 = t.tr[t.th["First"], t.th["Last"], t.th["Stage"], t.th["Mission"], [t.th(Class='num')[d.abbr] for d in dests]]
+        tree = self.db.lv_family_tree
+        rows = []
+        lvs = dict((name, self.db.lv_family(name)) for name in self.db.lvs)
+        for name, depth in self.db.counted_flatten_tree(tree, lvs):
+            if depth < maxdepth:
+                lv = lvs[name]
+                def render_d(d):
+                    c = sum(lv['dest'].get(n, 0) for n in self.db.dest_tree.keys() if n.member(d) and (n == d or n not in dests))
+                    return str(c) if c else '-'
+                rows.append(t.tr(Class='' if depth else 'major')[
+                        t.td[[nevow.entities.nbsp] * depth, lv['lv'].name],
+                        t.td(Class='date')[lv['first'].isoformat()],
+                        t.td(Class='date')[lv['last'].isoformat()],
+                        t.td(Class='num')[str(lv['success'] or '-')],
+                        t.td(Class='num')[str(lv['failure'] or '-')],
+                        t.td(Class='num')[str(lv['mission_failure'] or '-')],
+                        [t.td(Class='num')[render_d(d)] for d in dests],
+                        ])
+        tbl = t.table[head1, head2, rows]
+        return self.wrap_page("LV families", tbl)
+    def render_stage_families(self, maxdepth, maxdest, vac=None):
+        dests = self.db.coalesce_dests(self.db.stages.values(), maxdest)
+        head1 = t.tr[t.th(rowspan=2)["Name"], t.th(rowspan=2)["Engine"], t.th(colspan=2)["Flight dates"], t.th(rowspan=2)["Success"], t.th(colspan=3)["Failed"], t.th(colspan=len(dests))["Destinations"]]
+        head2 = t.tr[t.th["First"], t.th["Last"], t.th["Stage"], t.th["Lower"], t.th["Mission"], [t.th(Class='num')[d.abbr] for d in dests]]
+        tree = self.db.stage_family_tree
+        rows = []
+        stages = dict((name, self.db.stage_family(name)) for name in self.db.stages)
+        def render_engine(st):
+            if st.engine_count > 1:
+                return '%dx %s' % (st.engine_count, st.engine)
+            return str(st.engine)
+        for name, depth in self.db.counted_flatten_tree(tree, stages):
+            st = stages[name]
+            if depth < maxdepth and (vac is None or st['stage'].vac == vac):
+                def render_d(d):
+                    c = sum(st['dest'].get(n, 0) for n in self.db.dest_tree.keys() if n.member(d) and (n == d or n not in dests))
+                    return str(c or '-')
+                rows.append(t.tr(Class='' if depth else 'major')[
+                        t.td[[nevow.entities.nbsp] * depth, st['stage'].name],
+                        t.td[render_engine(st['stage'])],
+                        t.td(Class='date')[st['first'].isoformat()],
+                        t.td(Class='date')[st['last'].isoformat()],
+                        t.td(Class='num')[str(st['success'] or '-')],
+                        t.td(Class='num')[str(st['failure'] or '-')],
+                        t.td(Class='num')[str(st['lower_failure'] or '-')],
+                        t.td(Class='num')[str(st['mission_failure'] or '-')],
+                        [t.td(Class='num')[render_d(d)] for d in dests],
+                        ])
+        tbl = t.table[head1, head2, rows]
+        title = {None: "Stage families", False: "Booster stages", True: "Upper stages"}.get(vac)
+        return self.wrap_page(title, tbl)
+    def render_engine_families(self, maxdepth, maxdest, vac=None):
+        dests = self.db.coalesce_dests(self.db.engines.values(), maxdest)
+        head1 = t.tr[t.th(rowspan=2)["Name"], t.th(colspan=2)["Flight dates"], t.th(rowspan=2)["Success"], t.th(colspan=3)["Failed"], t.th(colspan=len(dests))["Destinations"]]
+        head2 = t.tr[t.th["First"], t.th["Last"], t.th["Stage"], t.th["Lower"], t.th["Mission"], [t.th(Class='num')[d.abbr] for d in dests]]
+        tree = self.db.engine_family_tree
+        rows = []
+        engines = dict((name, self.db.engine_family(name)) for name in self.db.engines)
+        for name, depth in self.db.counted_flatten_tree(tree, engines):
+            en = engines[name]
+            if depth < maxdepth and (vac is None or en['engine'].vac == vac):
+                def render_d(d):
+                    c = sum(en['dest'].get(n, 0) for n in self.db.dest_tree.keys() if n.member(d) and (n == d or n not in dests))
+                    return str(c) if c else '-'
+                rows.append(t.tr(Class='' if depth else 'major')[
+                        t.td[[nevow.entities.nbsp] * depth, en['engine'].name],
+                        t.td(Class='date')[en['first'].isoformat()],
+                        t.td(Class='date')[en['last'].isoformat()],
+                        t.td(Class='num')[str(en['success'] or '-')],
+                        t.td(Class='num')[str(en['failure'] or '-')],
+                        t.td(Class='num')[str(en['lower_failure'] or '-')],
+                        t.td(Class='num')[str(en['mission_failure'] or '-')],
+                        [t.td(Class='num')[render_d(d)] for d in dests],
+                        ])
+        tbl = t.table[head1, head2, rows]
+        title = {None: "Engine families", False: "Atmospheric engines", True: "Vacuum engines"}.get(vac)
+        return self.wrap_page(title, tbl)
+    def render_launches_per_year(self, maxdest):
+        dests = self.db.coalesce_dests(self.db.lvs.values(), maxdest)
+        head1 = t.tr[t.th(rowspan=2)["Year"], t.th(rowspan=2)["Launches"], t.th(colspan=len(dests))["By destination"]]
+        head2 = t.tr[[t.th[d.abbr] for d in dests]]
+        rows = []
+        for year, launches in sorted(self.db.launches_by_year.items()):
+            by_dest = {}
+            for launch in launches:
+                by_dest[launch.dest] = by_dest.get(launch.dest, 0) + 1
+            def render_d(d):
+                c = sum(by_dest.get(n, 0) for n in self.db.dest_tree.keys() if n.member(d) and (n == d or n not in dests))
+                return str(c) if c else '-'
+            rows.append(t.tr[t.td(Class='date')[year], t.td(Class='num')[len(launches)], [t.td(Class='num')[render_d(d)] for d in dests]])
+        tbl = t.table[head1, head2, rows]
+        return self.wrap_page("Launches per year", tbl)
+
+def test_html(db):
+    # Render HTML tables
+    html = HtmlRenderer(db)
+    import os
+    if not os.path.isdir('html'):
+        os.mkdir('html')
+    with open('html/lpy.html', 'w') as lpy:
+        lpy.write(html.render_launches_per_year(2))
+    with open('html/lvf.html', 'w') as lvf:
+        lvf.write(html.render_lv_families(2, 1))
+    with open('html/bsf.html', 'w') as bsf:
+        bsf.write(html.render_stage_families(2, 1, False))
+    with open('html/vsf.html', 'w') as vsf:
+        vsf.write(html.render_stage_families(2, 1, True))
+    with open('html/bef.html', 'w') as bef:
+        bef.write(html.render_engine_families(2, 1, False))
+    with open('html/vef.html', 'w') as vef:
+        vef.write(html.render_engine_families(2, 1, True))
+
+def test_text(db):
+    # Render text tables
+    rend = TextRenderer(db)
+    print rend.render_launches_per_year(2)
+    print
+    print rend.render_lv_families(2, 1)
+    print
+    print "Booster stages:"
+    print rend.render_stage_families(2, 1, False)
+    print
+    print "Upper stages:"
+    print rend.render_stage_families(2, 1, True)
+    print
+    print "Atmospheric engines:"
+    print rend.render_engine_families(2, 1, False)
+    print
+    print "Vacuum engines:"
+    print rend.render_engine_families(2, 1, True)

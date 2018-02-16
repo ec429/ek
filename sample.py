@@ -2,7 +2,7 @@
 # encoding: utf-8
 from ek import *
 
-def test():
+def testdb():
     # Some test data from my own RP-1 game
     Redstone = EngineFamily("NAA-75-110", "Ethanol/LOx booster engine developed from German Aggregat 4.")
     DavyStage = StageFamily("Davy", Redstone, None)
@@ -327,24 +327,9 @@ def test():
     launch("Locke 2B3",     1962, 11,  2, Locke2B,      Payload("Hobbes 3", "Cargo supply ship to Lagrange Space Station.", "~50 man-days of LS."), LEO, 0)
 
     print "%d launches recorded" % (len(launches),)
-    db = Database(launches)
-    # Render text tables
-    rend = TextRenderer(db)
-    print rend.render_launches_per_year(2)
-    print
-    print rend.render_lv_families(2, 1)
-    print
-    print "Booster stages:"
-    print rend.render_stage_families(2, 1, False)
-    print
-    print "Upper stages:"
-    print rend.render_stage_families(2, 1, True)
-    print
-    print "Atmospheric engines:"
-    print rend.render_engine_families(2, 1, False)
-    print
-    print "Vacuum engines:"
-    print rend.render_engine_families(2, 1, True)
+    return Database(launches)
 
 if __name__ == '__main__':
-    test()
+    db = testdb()
+    test_html(db)
+    test_text(db)
