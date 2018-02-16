@@ -330,6 +330,16 @@ def testdb():
     return Database(launches)
 
 if __name__ == '__main__':
+    import optparse
+    x = optparse.OptionParser()
+    x.add_option('-w', '--web', action='store_true')
+    x.add_option('-p', '--port', type='int', help='TCP port number to serve', default=8080)
+    opts, args = x.parse_args()
+    if args:
+        x.error("Unexpected positional arguments")
     db = testdb()
-    test_html(db)
-    test_text(db)
+    if opts.web:
+        serve_web(db, opts.port)
+    else:
+        test_html(db)
+        test_text(db)
