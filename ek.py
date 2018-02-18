@@ -414,7 +414,7 @@ class Database(object):
                     changes = True
         leaves = [l for l in leaves if count[l]]
         return sorted(leaves, key=lambda d:d.sort)
-    def filter_launches(self, lv=None, stage=None, engine=None):
+    def filter_launches(self, lv=None, stage=None, engine=None, year=None):
         lvf = self.flatten_tree({lv: self.lv_tree[lv]}) if lv else None
         stf = self.flatten_tree({stage: self.stage_tree[stage]}) if stage else None
         enf = self.flatten_tree({engine: self.engine_tree[engine]}) if engine else None
@@ -424,6 +424,8 @@ class Database(object):
             if stf is not None and not any(st in [s.name for s in l.lv.stages] for st in stf):
                 return False
             if enf is not None and not any(en in [s.engine.name for s in l.lv.stages] for en in enf):
+                return False
+            if year is not None and l.date.year != year:
                 return False
             return True
         return filter(do_filter, self.launches)
@@ -723,13 +725,13 @@ class HtmlRenderer(Renderer):
             def render_d(d):
                 c = sum(by_dest.get(n, 0) for n in self.db.dest_tree.keys() if n.member(d) and (n == d or n not in dests))
                 return str(c) if c else '-'
-            rows.append(t.tr[t.td(Class='date')[year], t.td(Class='num')[len(launches)], [t.td(Class='num')[render_d(d)] for d in dests]])
+            rows.append(t.tr[t.td(Class='date')[t.a(href='year?year=%d'%(year,))[year]], t.td(Class='num')[len(launches)], [t.td(Class='num')[render_d(d)] for d in dests]])
         tbl = t.table[head1, head2, rows]
         return self.wrap_page("Launches per year", tbl)
-    def table_launch_history(self, lv=None, stage=None, engine=None):
+    def table_launch_history(self, **kwargs):
         head = t.tr[t.th["Name"], t.th["Date"], t.th["LV"], t.th["Payload"], t.th["Destination"], t.th["Result"]]
         rows = []
-        for launch in self.db.filter_launches(lv=lv, stage=stage, engine=engine):
+        for launch in self.db.filter_launches(**kwargs):
             def render_result(result):
                 if isinstance(result, tuple):
                     return [render_result(result[0]), ' + stage %s failure' % (', '.join(map(str, result[1:])),)]
@@ -748,6 +750,15 @@ class HtmlRenderer(Renderer):
                              t.td[render_result(launch.result)],
                              ])
         return t.table[head, rows]
+    def launches_for_year(self, year=None):
+        if year is None:
+            raise Exception("No year specified")
+        year = int(year)
+        title = "Launches for %d" % (year,)
+        body = [t.p[t.a(href='year?year=%d'%(year - 1,))['%d <'%(year - 1,)], ' ',
+                    t.a(href='year?year=%d'%(year + 1,))['> %d'%(year + 1,)]],
+                self.table_launch_history(year=year)]
+        return self.wrap_page(title, body)
     def render_lv_info(self, name=None):
         if name not in self.db.lvs:
             raise Exception("No such LV '%s'"%(name,))
@@ -912,6 +923,7 @@ def serve_web(db, port):
     root.putChild('lv', RendererWithArgs(rend.render_lv_info))
     root.putChild('stage', RendererWithArgs(rend.render_stage_info))
     root.putChild('engine', RendererWithArgs(rend.render_engine_info))
+    root.putChild('year', RendererWithArgs(rend.launches_for_year))
     ep = "tcp:%d"%(port,)
     endpoints.serverFromString(reactor, ep).listen(server.Site(root))
     reactor.run()
