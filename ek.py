@@ -183,6 +183,7 @@ LI = Destination("Lunar impact", "LI", "Hard impact with the Moon, destroying th
 LO = Destination("Lunar orbit", "LO", "Any orbit around the Moon.", Moon)
 LS = Destination("Lunar surface", "LS", "Soft landing on the Moon's surface.", LO)
 LSR = Destination("Lunar surface return", "LSR", "Soft landing on the Moon's surface, followed by return to Earth and recovery.", LS)
+HC = Destination("Heliocentric orbit", "HC", "Orbit around the Sun not encountering any other bodies.")
 IP = Destination("Interplanetary", "IP", "Any mission to a solar-system body beyond the Earth-Moon system.")
 Mercury = Destination("Mercury", "H", "Slow-rotating rocky innermost planet.  Lacking an atmosphere, temperatures on the day and night side reach opposite extremes.", IP) # 'H' for 'Hermes', to avoid confusion with Mars
 HF = Destination("Mercury fly-by", "HF", "Trajectory which visits Mercury but does not capture into orbit or reach the surface.", Mercury)
@@ -411,6 +412,7 @@ class Database(object):
                     leaves = set(l for l in leaves if not l.member(leaf.category))
                     leaves.add(leaf.category)
                     changes = True
+        leaves = [l for l in leaves if count[l]]
         return sorted(leaves, key=lambda d:d.sort)
     def filter_launches(self, lv=None, stage=None, engine=None):
         lvf = self.flatten_tree({lv: self.lv_tree[lv]}) if lv else None
@@ -611,15 +613,15 @@ class HtmlRenderer(Renderer):
             return str(payload.name)
         return t.acronym(title=payload.description)[payload.name]
     def table_lv_families(self, maxdepth, maxdest, root=None):
-        dests = self.db.coalesce_dests(self.db.lvs.values(), maxdest)
-        head1 = t.tr[t.th(rowspan=2)["Name"], t.th(colspan=2)["Flight dates"], t.th(rowspan=2)["Success"], t.th(colspan=2)["Failed"], t.th(rowspan=2)["T-0 Scrub"], t.th(colspan=len(dests))["Destinations"]]
-        head2 = t.tr[t.th["First"], t.th["Last"], t.th["Stage"], t.th["Mission"], [t.th(Class='num')[self.show_dest(d)] for d in dests]]
         if root:
             tree = {root: self.db.lv_tree[root]}
         else:
             tree = self.db.lv_family_tree
-        rows = []
         lvs = dict((name, self.db.lv_family(name)) for name in self.db.lvs)
+        dests = self.db.coalesce_dests(map(self.db.lv_family, self.db.flatten_tree(tree)), maxdest)
+        head1 = t.tr[t.th(rowspan=2)["Name"], t.th(colspan=2)["Flight dates"], t.th(rowspan=2)["Success"], t.th(colspan=2)["Failed"], t.th(rowspan=2)["T-0 Scrub"], t.th(colspan=len(dests))["Destinations"]]
+        head2 = t.tr[t.th["First"], t.th["Last"], t.th["Stage"], t.th["Mission"], [t.th(Class='num')[self.show_dest(d)] for d in dests]]
+        rows = []
         for name, depth in self.db.counted_flatten_tree(tree, lvs):
             if depth < maxdepth:
                 lv = lvs[name]
@@ -641,13 +643,13 @@ class HtmlRenderer(Renderer):
     def render_lv_families(self, maxdepth, maxdest):
         return self.wrap_page("LV families", self.table_lv_families(maxdepth, maxdest))
     def table_stage_families(self, maxdepth, maxdest, vac=None, root=None):
-        dests = self.db.coalesce_dests(self.db.stages.values(), maxdest)
-        head1 = t.tr[t.th(rowspan=2)["Name"], t.th(rowspan=2)["Engine"], t.th(colspan=2)["Flight dates"], t.th(rowspan=2)["Success"], t.th(colspan=3)["Failed"], t.th(colspan=len(dests))["Destinations"]]
-        head2 = t.tr[t.th["First"], t.th["Last"], t.th["Stage"], t.th["Lower"], t.th["Mission"], [t.th(Class='num')[self.show_dest(d)] for d in dests]]
         if root:
             tree = {root: self.db.stage_tree[root]}
         else:
             tree = self.db.stage_family_tree
+        dests = self.db.coalesce_dests(map(self.db.stage_family, self.db.flatten_tree(tree)), maxdest)
+        head1 = t.tr[t.th(rowspan=2)["Name"], t.th(rowspan=2)["Engine"], t.th(colspan=2)["Flight dates"], t.th(rowspan=2)["Success"], t.th(colspan=3)["Failed"], t.th(colspan=len(dests))["Destinations"]]
+        head2 = t.tr[t.th["First"], t.th["Last"], t.th["Stage"], t.th["Lower"], t.th["Mission"], [t.th(Class='num')[self.show_dest(d)] for d in dests]]
         rows = []
         stages = dict((name, self.db.stage_family(name)) for name in self.db.stages)
         def render_engine(st):
@@ -678,13 +680,13 @@ class HtmlRenderer(Renderer):
         title = {None: "Stage families", False: "Booster stages", True: "Upper stages"}.get(vac)
         return self.wrap_page(title, self.table_stage_families(maxdepth, maxdest, vac=vac))
     def table_engine_families(self, maxdepth, maxdest, vac=None, root=None):
-        dests = self.db.coalesce_dests(self.db.engines.values(), maxdest)
-        head1 = t.tr[t.th(rowspan=2)["Name"], t.th(colspan=2)["Flight dates"], t.th(rowspan=2)["Success"], t.th(colspan=3)["Failed"], t.th(colspan=len(dests))["Destinations"]]
-        head2 = t.tr[t.th["First"], t.th["Last"], t.th["Stage"], t.th["Lower"], t.th["Mission"], [t.th(Class='num')[self.show_dest(d)] for d in dests]]
         if root:
             tree = {root: self.db.engine_tree[root]}
         else:
             tree = self.db.engine_family_tree
+        dests = self.db.coalesce_dests(map(self.db.engine_family, self.db.flatten_tree(tree)), maxdest)
+        head1 = t.tr[t.th(rowspan=2)["Name"], t.th(colspan=2)["Flight dates"], t.th(rowspan=2)["Success"], t.th(colspan=3)["Failed"], t.th(colspan=len(dests))["Destinations"]]
+        head2 = t.tr[t.th["First"], t.th["Last"], t.th["Stage"], t.th["Lower"], t.th["Mission"], [t.th(Class='num')[self.show_dest(d)] for d in dests]]
         rows = []
         engines = dict((name, self.db.engine_family(name)) for name in self.db.engines)
         for name, depth in self.db.counted_flatten_tree(tree, engines):
