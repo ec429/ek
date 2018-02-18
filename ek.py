@@ -15,6 +15,7 @@ class EngineFamily(object):
         self.name = name
         self.description = description
         self.vac = vac
+        self.family = None
     def __str__(self):
         return self.name
     __repr__ = __str__ # XXX naughty temporary hack for testing
@@ -52,6 +53,7 @@ class StageFamily(object):
         self.description = description
         self.engine_count = engine_count
         self.vac = vac
+        self.family = None
     def __str__(self):
         return self.name
     __repr__ = __str__ # XXX naughty
@@ -105,6 +107,7 @@ class LVFamily(object):
         self.name = name
         self.description = description
         self.stages = sf
+        self.family = None
     def __str__(self):
         return self.name
     __repr__ = __str__ # XXX naughty
@@ -164,6 +167,7 @@ class Destination(object):
         return self.abbr
     __repr__ = __str__ # XXX naughty
 
+EA = Destination("Earth Atmosphere", "EA", "Ballistic trajectory which does not reach the Kármán line.")
 SO = Destination("Sub-orbital", "SO", "Any ballistic trajectory which clears Earth's atmosphere (apogee beyond the Kármán line, 100km) but does not reach orbit.")
 EO = Destination("Earth orbit", "EO", "Any orbit around Earth, excluding Lunar transfers.")
 EO.depth = 1
@@ -212,6 +216,7 @@ class Launch(object):
     def __init__(self, name, when, lv, payload, dest, result):
         """Result semantics:
         
+        -2 = Scrub at T-0 (i.e., failure before launch clamps released)
         -1 = Mission failure (all stages worked but design error killed mission)
         0 = Success
         positive = number of failing stage
@@ -228,7 +233,7 @@ class Database(object):
         self.launches = launches
         self.update()
     def add_lv(self, lv):
-        self.lvs.setdefault(lv.name, {'lv': lv, 'success': 0, 'mission_failure': 0, 'failure': 0, 'dest': {}})
+        self.lvs.setdefault(lv.name, {'lv': lv, 'success': 0, 'scrub': 0, 'mission_failure': 0, 'failure': 0, 'dest': {}})
         if lv.name not in self.lv_tree:
             self.lv_tree[lv.name] = {}
         fam = getattr(lv, "family", None)
@@ -237,7 +242,7 @@ class Database(object):
         return self.lv_tree[lv.name]
     def add_stage(self, stage):
         self.add_engine(stage.engine)
-        self.stages.setdefault(stage.name, {'stage': stage, 'success': 0, 'mission_failure': 0, 'lower_failure': 0, 'failure': 0, 'dest': {}})
+        self.stages.setdefault(stage.name, {'stage': stage, 'success': 0, 'scrub': 0, 'mission_failure': 0, 'lower_failure': 0, 'failure': 0, 'dest': {}})
         if stage.name not in self.stage_tree:
             self.stage_tree[stage.name] = {}
         fam = getattr(stage, "family", None)
@@ -245,7 +250,7 @@ class Database(object):
             self.add_stage(fam)[stage.name] = self.stage_tree[stage.name]
         return self.stage_tree[stage.name]
     def add_engine(self, eng):
-        self.engines.setdefault(eng.name, {'engine': eng, 'success': 0, 'mission_failure': 0, 'lower_failure': 0, 'failure': 0, 'dest': {}})
+        self.engines.setdefault(eng.name, {'engine': eng, 'success': 0, 'scrub': 0, 'mission_failure': 0, 'lower_failure': 0, 'failure': 0, 'dest': {}})
         if eng.name not in self.engine_tree:
             self.engine_tree[eng.name] = {}
         fam = getattr(eng, "family", None)
@@ -276,11 +281,14 @@ class Database(object):
             lv['last'] = max(lv.get('last', launch.date), launch.date)
             if launch.result == 0:
                 lv['success'] += 1
+            elif launch.result == -2:
+                lv['scrub'] += 1
             elif launch.result < 0:
                 lv['mission_failure'] += 1
             else:
                 lv['failure'] += 1
-            lv['dest'][launch.dest] = lv['dest'].get(launch.dest, 0) + 1
+            if launch.result != -2:
+                lv['dest'][launch.dest] = lv['dest'].get(launch.dest, 0) + 1
             for i,stage in enumerate(launch.lv.stages):
                 self.add_stage(stage)
                 st = self.stages[stage.name]
@@ -296,6 +304,10 @@ class Database(object):
                     if launch.result[0] == 0:
                         st['success'] += not fails
                         en['success'] += stage.engine_count - fails
+                    elif launch.result[0] == -2:
+                        if not i:
+                            st['scrub'] += not fails
+                            en['scrub'] += stage.engine_count - fails
                     elif launch.result[0] < 0 or launch.result[0] > i + 1:
                         st['mission_failure'] += not fails
                         en['mission_failure'] += stage.engine_count - fails
@@ -308,6 +320,10 @@ class Database(object):
                     if launch.result == 0:
                         st['success'] += 1
                         en['success'] += stage.engine_count
+                    elif launch.result == -2:
+                        if not i:
+                            st['scrub'] += 1
+                            en['scrub'] += stage.engine_count
                     elif launch.result < 0 or launch.result > i + 1:
                         st['mission_failure'] += 1
                         en['mission_failure'] += stage.engine_count
@@ -318,8 +334,9 @@ class Database(object):
                         st['failure'] += 1
                         en['failure'] += 1
                         en['mission_failure'] += stage.engine_count - 1
-                st['dest'][launch.dest] = st['dest'].get(launch.dest, 0) + 1
-                en['dest'][launch.dest] = en['dest'].get(launch.dest, 0) + stage.engine_count
+                if launch.result != -2:
+                    st['dest'][launch.dest] = st['dest'].get(launch.dest, 0) + 1
+                    en['dest'][launch.dest] = en['dest'].get(launch.dest, 0) + stage.engine_count
             self.add_dest(launch.dest)
             self.launches_by_year.setdefault(launch.date.year, []).append(launch)
     @classmethod
@@ -347,7 +364,7 @@ class Database(object):
         return dict((k,v) for k,v in self.engine_tree.items() if isinstance(self.engines[k]['engine'], EngineFamily))
     @classmethod
     def roll_family(cls, d, e):
-        for k in ('success', 'failure', 'mission_failure', 'lower_failure'):
+        for k in ('success', 'scrub', 'failure', 'mission_failure', 'lower_failure'):
             if k in e:
                 d[k] = d.get(k, 0) + e[k]
         if 'first' in d:
@@ -362,19 +379,19 @@ class Database(object):
             d['dest'][k] = d['dest'].get(k, 0) + e['dest'][k]
     def lv_family(self, name):
         fam = self.flatten_tree(self.lv_tree[name])
-        d = {'lv': self.lvs[name]['lv'], 'success': 0, 'mission_failure': 0, 'failure': 0, 'dest': {}}
+        d = {'lv': self.lvs[name]['lv'], 'success': 0, 'scrub': 0, 'mission_failure': 0, 'failure': 0, 'dest': {}}
         for n in [name] + fam:
             self.roll_family(d, self.lvs[n])
         return d
     def stage_family(self, name):
         fam = self.flatten_tree(self.stage_tree[name])
-        d = {'stage': self.stages[name]['stage'], 'success': 0, 'mission_failure': 0, 'failure': 0, 'dest': {}}
+        d = {'stage': self.stages[name]['stage'], 'success': 0, 'scrub': 0, 'mission_failure': 0, 'failure': 0, 'dest': {}}
         for n in [name] + fam:
             self.roll_family(d, self.stages[n])
         return d
     def engine_family(self, name):
         fam = self.flatten_tree(self.engine_tree[name])
-        d = {'engine': self.engines[name]['engine'], 'success': 0, 'mission_failure': 0, 'failure': 0, 'dest': {}}
+        d = {'engine': self.engines[name]['engine'], 'success': 0, 'scrub': 0, 'mission_failure': 0, 'failure': 0, 'dest': {}}
         for n in [name] + fam:
             self.roll_family(d, self.engines[n])
         return d
@@ -396,10 +413,18 @@ class Database(object):
                     changes = True
         return sorted(leaves, key=lambda d:d.sort)
     def filter_launches(self, lv=None, stage=None, engine=None):
-        if stage or engine:
-            raise NotImplementedError('stage or engine filtering')
         lvf = self.flatten_tree({lv: self.lv_tree[lv]}) if lv else None
-        return filter(lambda l: lvf is None or l.lv.name in lvf, self.launches)
+        stf = self.flatten_tree({stage: self.stage_tree[stage]}) if stage else None
+        enf = self.flatten_tree({engine: self.engine_tree[engine]}) if engine else None
+        def do_filter(l):
+            if lvf is not None and l.lv.name not in lvf:
+                return False
+            if stf is not None and not any(st in [s.name for s in l.lv.stages] for st in stf):
+                return False
+            if enf is not None and not any(en in [s.engine.name for s in l.lv.stages] for en in enf):
+                return False
+            return True
+        return filter(do_filter, self.launches)
 
 class Renderer(object):
     def __init__(self, db):
@@ -577,10 +602,18 @@ class HtmlRenderer(Renderer):
         page = t.html[t.head[t.title[title + ' - Encyclopædia Kerbonautica'], t.style[self.stylesheet]],
                       t.body[t.h1[title], body]]
         return flatten(page)
+    def show_dest(self, dest):
+        return t.acronym(title="%s: %s" % (dest.name, dest.description))[dest.abbr]
+    def show_payload(self, payload):
+        if not payload:
+            return 'None'
+        if not payload.description:
+            return str(payload.name)
+        return t.acronym(title=payload.description)[payload.name]
     def table_lv_families(self, maxdepth, maxdest, root=None):
         dests = self.db.coalesce_dests(self.db.lvs.values(), maxdest)
-        head1 = t.tr[t.th(rowspan=2)["Name"], t.th(colspan=2)["Flight dates"], t.th(rowspan=2)["Success"], t.th(colspan=2)["Failed"], t.th(colspan=len(dests))["Destinations"]]
-        head2 = t.tr[t.th["First"], t.th["Last"], t.th["Stage"], t.th["Mission"], [t.th(Class='num')[d.abbr] for d in dests]]
+        head1 = t.tr[t.th(rowspan=2)["Name"], t.th(colspan=2)["Flight dates"], t.th(rowspan=2)["Success"], t.th(colspan=2)["Failed"], t.th(rowspan=2)["T-0 Scrub"], t.th(colspan=len(dests))["Destinations"]]
+        head2 = t.tr[t.th["First"], t.th["Last"], t.th["Stage"], t.th["Mission"], [t.th(Class='num')[self.show_dest(d)] for d in dests]]
         if root:
             tree = {root: self.db.lv_tree[root]}
         else:
@@ -601,30 +634,36 @@ class HtmlRenderer(Renderer):
                         t.td(Class='num')[str(lv['success'] or '-')],
                         t.td(Class='num')[str(lv['failure'] or '-')],
                         t.td(Class='num')[str(lv['mission_failure'] or '-')],
+                        t.td(Class='num')[str(lv['scrub'] or '-')],
                         [t.td(Class='num')[render_d(d)] for d in dests],
                         ])
         return t.table[head1, head2, rows]
     def render_lv_families(self, maxdepth, maxdest):
         return self.wrap_page("LV families", self.table_lv_families(maxdepth, maxdest))
-    def render_stage_families(self, maxdepth, maxdest, vac=None):
+    def table_stage_families(self, maxdepth, maxdest, vac=None, root=None):
         dests = self.db.coalesce_dests(self.db.stages.values(), maxdest)
         head1 = t.tr[t.th(rowspan=2)["Name"], t.th(rowspan=2)["Engine"], t.th(colspan=2)["Flight dates"], t.th(rowspan=2)["Success"], t.th(colspan=3)["Failed"], t.th(colspan=len(dests))["Destinations"]]
-        head2 = t.tr[t.th["First"], t.th["Last"], t.th["Stage"], t.th["Lower"], t.th["Mission"], [t.th(Class='num')[d.abbr] for d in dests]]
-        tree = self.db.stage_family_tree
+        head2 = t.tr[t.th["First"], t.th["Last"], t.th["Stage"], t.th["Lower"], t.th["Mission"], [t.th(Class='num')[self.show_dest(d)] for d in dests]]
+        if root:
+            tree = {root: self.db.stage_tree[root]}
+        else:
+            tree = self.db.stage_family_tree
         rows = []
         stages = dict((name, self.db.stage_family(name)) for name in self.db.stages)
         def render_engine(st):
+            eng = t.a(href='engine?name='+urllib.quote(st.engine.name))[st.engine.name]
             if st.engine_count > 1:
-                return '%dx %s' % (st.engine_count, st.engine)
-            return str(st.engine)
+                eng = ['%dx ' % (st.engine_count,), eng]
+            return eng
         for name, depth in self.db.counted_flatten_tree(tree, stages):
             st = stages[name]
             if depth < maxdepth and (vac is None or st['stage'].vac == vac):
                 def render_d(d):
                     c = sum(st['dest'].get(n, 0) for n in self.db.dest_tree.keys() if n.member(d) and (n == d or n not in dests))
                     return str(c or '-')
+                name = st['stage'].name
                 rows.append(t.tr(Class='' if depth else 'major')[
-                        t.td[[nevow.entities.nbsp] * depth, st['stage'].name],
+                        t.td[[nevow.entities.nbsp] * depth, t.a(href='stage?name='+urllib.quote(name))[name]],
                         t.td[render_engine(st['stage'])],
                         t.td(Class='date')[st['first'].isoformat()],
                         t.td(Class='date')[st['last'].isoformat()],
@@ -634,14 +673,18 @@ class HtmlRenderer(Renderer):
                         t.td(Class='num')[str(st['mission_failure'] or '-')],
                         [t.td(Class='num')[render_d(d)] for d in dests],
                         ])
-        tbl = t.table[head1, head2, rows]
+        return t.table[head1, head2, rows]
+    def render_stage_families(self, maxdepth, maxdest, vac=None):
         title = {None: "Stage families", False: "Booster stages", True: "Upper stages"}.get(vac)
-        return self.wrap_page(title, tbl)
-    def render_engine_families(self, maxdepth, maxdest, vac=None):
+        return self.wrap_page(title, self.table_stage_families(maxdepth, maxdest, vac=vac))
+    def table_engine_families(self, maxdepth, maxdest, vac=None, root=None):
         dests = self.db.coalesce_dests(self.db.engines.values(), maxdest)
         head1 = t.tr[t.th(rowspan=2)["Name"], t.th(colspan=2)["Flight dates"], t.th(rowspan=2)["Success"], t.th(colspan=3)["Failed"], t.th(colspan=len(dests))["Destinations"]]
-        head2 = t.tr[t.th["First"], t.th["Last"], t.th["Stage"], t.th["Lower"], t.th["Mission"], [t.th(Class='num')[d.abbr] for d in dests]]
-        tree = self.db.engine_family_tree
+        head2 = t.tr[t.th["First"], t.th["Last"], t.th["Stage"], t.th["Lower"], t.th["Mission"], [t.th(Class='num')[self.show_dest(d)] for d in dests]]
+        if root:
+            tree = {root: self.db.engine_tree[root]}
+        else:
+            tree = self.db.engine_family_tree
         rows = []
         engines = dict((name, self.db.engine_family(name)) for name in self.db.engines)
         for name, depth in self.db.counted_flatten_tree(tree, engines):
@@ -650,8 +693,9 @@ class HtmlRenderer(Renderer):
                 def render_d(d):
                     c = sum(en['dest'].get(n, 0) for n in self.db.dest_tree.keys() if n.member(d) and (n == d or n not in dests))
                     return str(c) if c else '-'
+                name = en['engine'].name
                 rows.append(t.tr(Class='' if depth else 'major')[
-                        t.td[[nevow.entities.nbsp] * depth, en['engine'].name],
+                        t.td[[nevow.entities.nbsp] * depth, t.a(href='engine?name='+urllib.quote(name))[name]],
                         t.td(Class='date')[en['first'].isoformat()],
                         t.td(Class='date')[en['last'].isoformat()],
                         t.td(Class='num')[str(en['success'] or '-')],
@@ -660,16 +704,18 @@ class HtmlRenderer(Renderer):
                         t.td(Class='num')[str(en['mission_failure'] or '-')],
                         [t.td(Class='num')[render_d(d)] for d in dests],
                         ])
-        tbl = t.table[head1, head2, rows]
+        return t.table[head1, head2, rows]
+    def render_engine_families(self, maxdepth, maxdest, vac=None):
         title = {None: "Engine families", False: "Atmospheric engines", True: "Vacuum engines"}.get(vac)
-        return self.wrap_page(title, tbl)
+        return self.wrap_page(title, self.table_engine_families(maxdepth, maxdest, vac=vac))
     def render_launches_per_year(self, maxdest):
         dests = self.db.coalesce_dests(self.db.lvs.values(), maxdest)
         head1 = t.tr[t.th(rowspan=2)["Year"], t.th(rowspan=2)["Launches"], t.th(colspan=len(dests))["By destination"]]
-        head2 = t.tr[[t.th[d.abbr] for d in dests]]
+        head2 = t.tr[[t.th[self.show_dest(d)] for d in dests]]
         rows = []
         for year, launches in sorted(self.db.launches_by_year.items()):
             by_dest = {}
+            launches = [l for l in launches if l.result != -2]
             for launch in launches:
                 by_dest[launch.dest] = by_dest.get(launch.dest, 0) + 1
             def render_d(d):
@@ -678,23 +724,25 @@ class HtmlRenderer(Renderer):
             rows.append(t.tr[t.td(Class='date')[year], t.td(Class='num')[len(launches)], [t.td(Class='num')[render_d(d)] for d in dests]])
         tbl = t.table[head1, head2, rows]
         return self.wrap_page("Launches per year", tbl)
-    def table_launch_history(self, lv=None):
+    def table_launch_history(self, lv=None, stage=None, engine=None):
         head = t.tr[t.th["Name"], t.th["Date"], t.th["LV"], t.th["Payload"], t.th["Destination"], t.th["Result"]]
         rows = []
-        for launch in self.db.filter_launches(lv=lv):
+        for launch in self.db.filter_launches(lv=lv, stage=stage, engine=engine):
             def render_result(result):
                 if isinstance(result, tuple):
-                    return '%s + stage %s failure' % (render_result(result[0]), ', '.join(map(str, result[1:])))
+                    return [render_result(result[0]), ' + stage %s failure' % (', '.join(map(str, result[1:])),)]
                 if result == 0:
                     return 'Success'
+                if result == -2:
+                    return t.acronym(title="A failure occurred before launch clamps were released, so the launch attempt was abandoned and the vehicle rolled back.")['T-0 Scrub']
                 if result < 0:
                     return 'Mission Failure'
                 return 'Stage %d Failure' % (result,)
             rows.append(t.tr[t.td[launch.name],
                              t.td(Class='date')[launch.date.isoformat()],
                              t.td[t.a(href='lv?name='+urllib.quote(launch.lv.name))[launch.lv.name]],
-                             t.td[launch.payload.name if launch.payload else 'None'],
-                             t.td[launch.dest.name],
+                             t.td[self.show_payload(launch.payload)],
+                             t.td[t.acronym(title=launch.dest.description)[launch.dest.name]],
                              t.td[render_result(launch.result)],
                              ])
         return t.table[head, rows]
@@ -705,13 +753,55 @@ class HtmlRenderer(Renderer):
         lvs = dict((name, self.db.lv_family(name)) for name in self.db.lvs)
         title = "LV '%s'"%(lv.name,)
         blocks = []
+        if lv.family:
+            blocks.append(t.p["Family: ", t.a(href='lv?name='+urllib.quote(lv.family.name))[lv.family.name]])
         blocks.append(t.p[lv.description])
         blocks.append(t.h2["Stages"])
-        blocks.append(t.ol[[t.li[stage.name] for stage in lv.stages]])
+        blocks.append(t.ol[[t.li[t.a(href='stage?name='+urllib.quote(stage.name))[stage.name]] for stage in lv.stages]])
         blocks.append(t.h2["Summary of Launches"])
         blocks.append(self.table_lv_families(2, 1, root=name))
         blocks.append(t.h2["Full Launch History"])
         blocks.append(self.table_launch_history(lv=name))
+        return self.wrap_page(title, blocks)
+    def render_stage_info(self, name=None):
+        if name not in self.db.stages:
+            raise Exception("No such stage '%s'"%(name,))
+        st = self.db.stages[name]['stage']
+        sts = dict((name, self.db.stage_family(name)) for name in self.db.stages)
+        title = "Stage '%s'"%(st.name,)
+        blocks = []
+        if st.family:
+            blocks.append(t.p["Family: ", t.a(href='stage?name='+urllib.quote(st.family.name))[st.family.name]])
+        blocks.append(t.p["Upper stage." if st.vac else "Booster stage."])
+        blocks.append(t.p[st.description])
+        blocks.append(t.h2["Engine"])
+        eng = t.a(href='engine?name='+urllib.quote(st.engine.name))[st.engine.name]
+        if st.engine_count > 1:
+            eng = ['%d× ' % (st.engine_count,), eng]
+        blocks.append(t.p[eng])
+        blocks.append(t.h2["Summary of Launches"])
+        blocks.append(self.table_stage_families(2, 1, root=name))
+        blocks.append(t.h2["Full Launch History"])
+        blocks.append(self.table_launch_history(stage=name))
+        return self.wrap_page(title, blocks)
+    def render_engine_info(self, name=None):
+        if name not in self.db.engines:
+            raise Exception("No such engine '%s'"%(name,))
+        en = self.db.engines[name]['engine']
+        ens = dict((name, self.db.engine_family(name)) for name in self.db.engines)
+        title = "Engine '%s'"%(en.name,)
+        blocks = []
+        if en.family:
+            blocks.append(t.p["Family: ", t.a(href='engine?name='+urllib.quote(en.family.name))[en.family.name]])
+        blocks.append(t.p["Vacuum engine." if en.vac else "Atmospheric engine."])
+        blocks.append(t.p[en.description])
+        blocks.append(t.h2["Used in the following stages:"])
+        stages = [k for k,v in self.db.stages.items() if v['stage'].engine == en]
+        blocks.append(t.ul[[t.li[t.a(href='stage?name='+urllib.quote(st))[st]] for st in stages]])
+        blocks.append(t.h2["Summary of Launches"])
+        blocks.append(self.table_engine_families(2, 1, root=name))
+        blocks.append(t.h2["Full Launch History"])
+        blocks.append(self.table_launch_history(engine=name))
         return self.wrap_page(title, blocks)
 
 def test_html(db):
@@ -787,6 +877,7 @@ def serve_web(db, port):
         def content(self, **kwargs):
             raise NotImplementedError()
         def render_GET(self, request):
+            request.setHeader("content-type", "text/html; charset=utf-8")
             self.flatten_args(request)
             debug = request.args.pop('debug', 0)
             try:
@@ -795,7 +886,6 @@ def serve_web(db, port):
                 if debug:
                     raise
                 return flatten(self.error(e.message))
-            request.setHeader("content-type", "text/html; charset=utf-8")
             return flatten(page)
 
     class RendererWithArgs(PageWithArgs):
@@ -818,6 +908,8 @@ def serve_web(db, port):
     root.putChild('bef', Renderer(rend.render_engine_families, 2, 1, vac=False))
     root.putChild('vef', Renderer(rend.render_engine_families, 2, 1, vac=True))
     root.putChild('lv', RendererWithArgs(rend.render_lv_info))
+    root.putChild('stage', RendererWithArgs(rend.render_stage_info))
+    root.putChild('engine', RendererWithArgs(rend.render_engine_info))
     ep = "tcp:%d"%(port,)
     endpoints.serverFromString(reactor, ep).listen(server.Site(root))
     reactor.run()
