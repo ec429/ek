@@ -199,11 +199,27 @@ FF = Destination("Phobos fly-by", "FF", "Trajectory which passes near to Phobos 
 Jupiter = Destination("Jupiter", "J", "Largest planet of the solar system.  Gas giant.", IP)
 JF = Destination("Jupiter fly-by", "JF", "Trajectory which visits Jupiter but does not capture or enter the atmosphere.", Jupiter)
 
+class Picture(object):
+    def __init__(self, path, alt, caption=None):
+        self.path = path
+        self.alt = alt
+        self._caption = caption
+    @property
+    def caption(self):
+        if self._caption is None:
+            return self.alt
+        return self._caption
+    @caption.setter
+    def caption(self, value):
+        self._caption = value
+
 class Payload(object):
-    def __init__(self, name, description=None, paren=None):
+    def __init__(self, name, description=None, paren=None, pics=[]):
         self._name = name
         self.description = description
         self.paren = paren
+        self.pics = pics
+        self.launch = None
     @property
     def name(self):
         if self._name is None and self.paren is not None:
@@ -212,9 +228,16 @@ class Payload(object):
     @name.setter
     def name(self, value):
         self._name = value
+    def add_pic(self, pic):
+        self.pics.append(pic)
+    @property
+    def launch_pic(self):
+        if self.launch:
+            return self.launch.launch_pic
+        return None
 
 class Launch(object):
-    def __init__(self, name, when, lv, payload, dest, result):
+    def __init__(self, name, when, lv, payload, dest, result, comments=None, pics=[]):
         """Result semantics:
         
         -2 = Scrub at T-0 (i.e., failure before launch clamps released)
@@ -226,8 +249,19 @@ class Launch(object):
         self.date = when
         self.lv = lv
         self.payload = payload
+        if self.payload and result != -2:
+            self.payload.launch = self
         self.dest = dest
         self.result = result
+        self.comments = comments
+        self.pics = pics
+    def add_pic(self, pic):
+        self.pics.append(pic)
+    @property
+    def launch_pic(self):
+        if self.pics:
+            return self.pics[0]
+        return None
 
 class Database(object):
     def __init__(self, launches):
@@ -839,6 +873,7 @@ def test_html(db):
 def serve_web(db, port):
     from twisted.web import server, resource, static
     from twisted.internet import reactor, endpoints
+    import os.path
     class Page(resource.Resource):
         """Abstract base class for HTML pages."""
         isLeaf = True
@@ -857,6 +892,30 @@ def serve_web(db, port):
             return t.html[t.head[t.title['Encyclopædia Kerbonautica']],
                           t.body[t.h1["Error"],
                                  t.h2[msg]]]
+
+    def path_in(p1, p2):
+        # returns true if p1 is in the tree rooted at p2.  Allows to follow symlinks.
+        p2 = os.path.join(os.path.abspath(p2), '')
+        p1 = os.path.abspath(p1)
+        return os.path.commonprefix([p1, p2]) == p2
+
+    class PictureResource(Page):
+        def render_GET(self, request):
+            try:
+                self.flatten_args(request)
+                path = request.args['path']
+                size = request.args.get('size', None)
+                if not path_in(path, '.'):
+                    raise Exception("Bad path, reaches outside root")
+                f = open(path, "rb")
+                assert size is None, "size argument not supported yet"
+                # XXX We should probably do a mime-type check on the file, but KSP screenshots are always PNGs so this should work
+                request.setHeader("content-type", "image/png")
+                # XXX Strictly speaking we should probably mess around with a twisted.internet.interfaces.IPullProducer, but this will do for now
+                return f.read()
+            except Exception as e:
+                request.setHeader("content-type", "text/html; charset=utf-8")
+                return flatten(self.error(e.message))
 
     class Index(Page):
         def render_GET(self, request):
@@ -924,6 +983,7 @@ def serve_web(db, port):
     root.putChild('stage', RendererWithArgs(rend.render_stage_info))
     root.putChild('engine', RendererWithArgs(rend.render_engine_info))
     root.putChild('year', RendererWithArgs(rend.launches_for_year))
+    root.putChild('pic', PictureResource())
     ep = "tcp:%d"%(port,)
     endpoints.serverFromString(reactor, ep).listen(server.Site(root))
     reactor.run()
