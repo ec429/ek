@@ -214,11 +214,11 @@ class Picture(object):
         self._caption = value
 
 class Payload(object):
-    def __init__(self, name, description=None, paren=None, pics=[]):
+    def __init__(self, name, description=None, paren=None, pics=None):
         self._name = name
         self.description = description
         self.paren = paren
-        self.pics = pics
+        self.pics = pics or list()
         self.launch = None
     @property
     def name(self):
@@ -237,7 +237,7 @@ class Payload(object):
         return None
 
 class Launch(object):
-    def __init__(self, name, when, lv, payload, dest, result, comments=None, pics=[]):
+    def __init__(self, name, when, lv, payload, dest, result, comments=None, pics=None):
         """Result semantics:
         
         -2 = Scrub at T-0 (i.e., failure before launch clamps released)
@@ -254,7 +254,7 @@ class Launch(object):
         self.dest = dest
         self.result = result
         self.comments = comments
-        self.pics = pics
+        self.pics = pics or list()
     def add_pic(self, pic):
         self.pics.append(pic)
     @property
@@ -309,6 +309,8 @@ class Database(object):
         self.lv_tree = {}
         self.dest_tree = {}
         self.launches_by_year = {}
+        self.payloads = {}
+        self.launches_by_name = {}
         for launch in self.launches:
             self.add_lv(launch.lv)
             lv = self.lvs[launch.lv.name]
@@ -322,8 +324,11 @@ class Database(object):
                 lv['mission_failure'] += 1
             else:
                 lv['failure'] += 1
+            if launch.payload and launch.payload._name:
+                self.payloads[launch.payload.name] = launch.payload
             if launch.result != -2:
                 lv['dest'][launch.dest] = lv['dest'].get(launch.dest, 0) + 1
+                self.launches_by_name[launch.name] = launch
             for i,stage in enumerate(launch.lv.stages):
                 self.add_stage(stage)
                 st = self.stages[stage.name]
@@ -645,9 +650,11 @@ class HtmlRenderer(Renderer):
     def show_payload(self, payload):
         if not payload:
             return 'None'
-        if not payload.description:
-            return str(payload.name)
-        return t.acronym(title=payload.description)[payload.name]
+        if payload._name:
+            url = 'payload?name='+urllib.quote(payload.name)
+        else:
+            return payload.name
+        return t.a(href=url)[payload.name]
     def table_lv_families(self, maxdepth, maxdest, root=None):
         if root:
             tree = {root: self.db.lv_tree[root]}
@@ -762,26 +769,27 @@ class HtmlRenderer(Renderer):
             rows.append(t.tr[t.td(Class='date')[t.a(href='year?year=%d'%(year,))[year]], t.td(Class='num')[len(launches)], [t.td(Class='num')[render_d(d)] for d in dests]])
         tbl = t.table[head1, head2, rows]
         return self.wrap_page("Launches per year", tbl)
+    @classmethod
+    def render_result(cls, result):
+        if isinstance(result, tuple):
+            return [cls.render_result(result[0]), ' + stage %s failure' % (', '.join(map(str, result[1:])),)]
+        if result == 0:
+            return 'Success'
+        if result == -2:
+            return t.acronym(title="A failure occurred before launch clamps were released, so the launch attempt was abandoned and the vehicle rolled back.")['T-0 Scrub']
+        if result < 0:
+            return 'Mission Failure'
+        return 'Stage %d Failure' % (result,)
     def table_launch_history(self, **kwargs):
         head = t.tr[t.th["Name"], t.th["Date"], t.th["LV"], t.th["Payload"], t.th["Destination"], t.th["Result"]]
         rows = []
         for launch in self.db.filter_launches(**kwargs):
-            def render_result(result):
-                if isinstance(result, tuple):
-                    return [render_result(result[0]), ' + stage %s failure' % (', '.join(map(str, result[1:])),)]
-                if result == 0:
-                    return 'Success'
-                if result == -2:
-                    return t.acronym(title="A failure occurred before launch clamps were released, so the launch attempt was abandoned and the vehicle rolled back.")['T-0 Scrub']
-                if result < 0:
-                    return 'Mission Failure'
-                return 'Stage %d Failure' % (result,)
-            rows.append(t.tr[t.td[launch.name],
+            rows.append(t.tr[t.td[t.a(href='launch?name='+urllib.quote(launch.name))[launch.name]],
                              t.td(Class='date')[launch.date.isoformat()],
                              t.td[t.a(href='lv?name='+urllib.quote(launch.lv.name))[launch.lv.name]],
                              t.td[self.show_payload(launch.payload)],
                              t.td[t.acronym(title=launch.dest.description)[launch.dest.name]],
-                             t.td[render_result(launch.result)],
+                             t.td[self.render_result(launch.result)],
                              ])
         return t.table[head, rows]
     def launches_for_year(self, year=None):
@@ -850,6 +858,59 @@ class HtmlRenderer(Renderer):
         blocks.append(t.h2["Full Launch History"])
         blocks.append(self.table_launch_history(engine=name))
         return self.wrap_page(title, blocks)
+    def render_image_table(self, pics, per_row, size=None):
+        cur_row = []
+        rows = [cur_row]
+        for pic in pics:
+            if len(cur_row) >= per_row:
+                cur_row = []
+                rows.append(cur_row)
+            cur_row.append(pic)
+        trs = []
+        for row in rows:
+            ra = []
+            rb = []
+            for pic in row:
+                src = 'pic?path='+urllib.quote(pic.path)
+                if size:
+                    src += '&size=%d'%(size,)
+                ra.append(t.td[t.a(href='pic?path='+urllib.quote(pic.path))[t.img(src=src, alt=pic.alt)]])
+                rb.append(t.td[pic.caption])
+            trs.append(t.tr[ra])
+            trs.append(t.tr[rb])
+        return t.table[trs]
+    def render_payload_info(self, name=None):
+        if name not in self.db.payloads:
+            raise Exception("No such payload '%s'"%(name,))
+        payload = self.db.payloads[name]
+        title = "Payload '%s'"%(payload.name,)
+        blocks = [t.p[payload.description]]
+        if payload.launch:
+            blocks.append(t.p['Launched by ', t.a(href='launch?name='+urllib.quote(payload.launch.name))[payload.launch.name]])
+            blocks.append(t.p['Date: ', date.isoformat(payload.launch.date)])
+            blocks.append(t.p['Destination: ', t.acronym(title=payload.launch.dest.description)[payload.launch.dest.name]])
+            blocks.append(t.p['Result: ', self.render_result(payload.launch.result)])
+            blocks.append(t.p[payload.launch.comments])
+        if payload.pics:
+            blocks.append(t.h2["Image Gallery"])
+            blocks.append(self.render_image_table(payload.pics, 6, 200))
+        return self.wrap_page(title, blocks)
+    def render_launch_info(self, name=None):
+        if name not in self.db.launches_by_name:
+            raise Exception("No such launch '%s'"%(name,))
+        launch = self.db.launches_by_name[name]
+        title = "Launch '%s'"%(launch.name,)
+        #self, name, when, lv, payload, dest, result, comments=None, pics=[]
+        blocks = [t.p['Date: ', date.isoformat(launch.date)],
+                  t.p['Vehicle: ', t.a(href='lv?name='+urllib.quote(launch.lv.name))[launch.lv.name]],
+                  t.p['Payload: ', self.show_payload(launch.payload)],
+                  t.p['Destination: ', t.acronym(title=launch.dest.description)[launch.dest.name]],
+                  t.p['Result: ', self.render_result(launch.result)],
+                  t.p[launch.comments]]
+        if launch.pics:
+            blocks.append(t.h2["Image Gallery"])
+            blocks.append(self.render_image_table(launch.pics, 6, 200))
+        return self.wrap_page(title, blocks)
 
 def test_html(db):
     # Render HTML tables
@@ -901,6 +962,7 @@ def serve_web(db, port):
 
     class PictureResource(Page):
         def render_GET(self, request):
+            debug = request.args.pop('debug', 0)
             try:
                 self.flatten_args(request)
                 path = request.args['path']
@@ -914,6 +976,8 @@ def serve_web(db, port):
                 # XXX Strictly speaking we should probably mess around with a twisted.internet.interfaces.IPullProducer, but this will do for now
                 return f.read()
             except Exception as e:
+                if debug:
+                    raise
                 request.setHeader("content-type", "text/html; charset=utf-8")
                 return flatten(self.error(e.message))
 
@@ -983,6 +1047,8 @@ def serve_web(db, port):
     root.putChild('stage', RendererWithArgs(rend.render_stage_info))
     root.putChild('engine', RendererWithArgs(rend.render_engine_info))
     root.putChild('year', RendererWithArgs(rend.launches_for_year))
+    root.putChild('payload', RendererWithArgs(rend.render_payload_info))
+    root.putChild('launch', RendererWithArgs(rend.render_launch_info))
     root.putChild('pic', PictureResource())
     ep = "tcp:%d"%(port,)
     endpoints.serverFromString(reactor, ep).listen(server.Site(root))
