@@ -640,6 +640,7 @@ class HtmlRenderer(Renderer):
         td.num, th.num { text-align: right; }
         td.date { font-family: monospace; }
         .major { font-weight: bold; border-top: 2px solid black; }
+        .gallery td { text-align: center; width: 200px; }
     """
     def wrap_page(self, title, body):
         page = t.html[t.head[t.title[title + ' - Encyclopædia Kerbonautica'], t.style[self.stylesheet]],
@@ -878,7 +879,7 @@ class HtmlRenderer(Renderer):
                 rb.append(t.td[pic.caption])
             trs.append(t.tr[ra])
             trs.append(t.tr[rb])
-        return t.table[trs]
+        return t.table(Class='gallery')[trs]
     def render_payload_info(self, name=None):
         if name not in self.db.payloads:
             raise Exception("No such payload '%s'"%(name,))
@@ -900,7 +901,6 @@ class HtmlRenderer(Renderer):
             raise Exception("No such launch '%s'"%(name,))
         launch = self.db.launches_by_name[name]
         title = "Launch '%s'"%(launch.name,)
-        #self, name, when, lv, payload, dest, result, comments=None, pics=[]
         blocks = [t.p['Date: ', date.isoformat(launch.date)],
                   t.p['Vehicle: ', t.a(href='lv?name='+urllib.quote(launch.lv.name))[launch.lv.name]],
                   t.p['Payload: ', self.show_payload(launch.payload)],
@@ -934,6 +934,8 @@ def test_html(db):
 def serve_web(db, port):
     from twisted.web import server, resource, static
     from twisted.internet import reactor, endpoints
+    from PIL import Image
+    from cStringIO import StringIO
     import os.path
     class Page(resource.Resource):
         """Abstract base class for HTML pages."""
@@ -969,10 +971,18 @@ def serve_web(db, port):
                 size = request.args.get('size', None)
                 if not path_in(path, '.'):
                     raise Exception("Bad path, reaches outside root")
-                f = open(path, "rb")
-                assert size is None, "size argument not supported yet"
                 # XXX We should probably do a mime-type check on the file, but KSP screenshots are always PNGs so this should work
                 request.setHeader("content-type", "image/png")
+                f = open(path, "rb")
+                if size is not None:
+                    size = int(size)
+                    im = Image.open(f)
+                    im.thumbnail((size, size * 100))
+                    of = StringIO()
+                    im.save(of, format='PNG')
+                    v = of.getvalue()
+                    of.close()
+                    return v
                 # XXX Strictly speaking we should probably mess around with a twisted.internet.interfaces.IPullProducer, but this will do for now
                 return f.read()
             except Exception as e:
