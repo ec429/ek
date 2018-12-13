@@ -194,10 +194,28 @@ VS = Destination("Venus surface", "VS", "Soft landing on the surface of Venus.",
 Mars = Destination("Mars", "M", "Fourth rock from the Sun, the Red Planet has a thin but active atmosphere.", IP)
 MF = Destination("Mars fly-by", "MF", "Trajectory which visits Mars but does not capture or enter the atmosphere.", Mars)
 MO = Destination("Mars orbit", "MO", "Any orbit around Mars.", Mars)
+MS = Destination("Mars surface", "MS", "Soft landing on the surface of Mars.", Mars)
 Phobos = Destination("Phobos", "F", "Small potato orbiting Mars.", Mars) # 'F' for 'Fobos', to avoid confusion with Pluto
 FF = Destination("Phobos fly-by", "FF", "Trajectory which passes near to Phobos but does not capture into orbit or reach the surface.", Phobos)
+Ceres = Destination("Ceres", "c", "Large spherical main-belt asteroid.", IP) # lower-case indicates asteroid
+cF = Destination("Ceres fly-by", "cF", "Trajectory which visits Ceres but does not capture into orbit or reach the surface.", Ceres)
+Vesta = Destination("Vesta", "v", "Main-belt asteroid with non-spherical shape.", IP) # lower-case indicates asteroid
+vF = Destination("Vesta fly-by", "vF", "Trajectory which visits Vesta but does not capture into orbit or reach the surface.", Vesta)
 Jupiter = Destination("Jupiter", "J", "Largest planet of the solar system.  Gas giant.", IP)
 JF = Destination("Jupiter fly-by", "JF", "Trajectory which visits Jupiter but does not capture or enter the atmosphere.", Jupiter)
+JO = Destination("Jupiter orbit", "JO", "Any orbit around Jupiter.", Jupiter)
+GT = Destination("Galilean moon tour", "GT", "Fly-bys of all four Galilean moons.", JO)
+Io = Destination("Io", "I", "Innermost of Jupiter's Galilean moons.  Volcanically active due to tidal flexing.", Jupiter)
+Europa = Destination("Europa", "R", "Icy moon of Jupiter.  Theorised to have a large subsurface ocean.", Jupiter) # euRopa, as E is Earth and U is Uranus
+Ganymede = Destination("Ganymede", "G", "Rocky moon of Jupiter with faint magnetic field.  Heavier than Mercury!", Jupiter)
+Callisto = Destination("Callisto", "C", "Jupiter's outer moon, rocky and nondescript.", Jupiter)
+Saturn = Destination("Saturn", "S", "Gas giant with famous ring system.", IP)
+Titan = Destination("Titan", "T", "Large moon of Saturn.  Possesses a thick atmosphere of hydrocarbons.", Saturn)
+Iapetus = Destination("Iapetus", "Y", "Highly contrastive moon of Saturn: icy on one side, dirty on the other.", Saturn)
+Uranus = Destination("Uranus", "U", "Ice giant rotating horizontally.", IP)
+Neptune = Destination("Neptune", "N", "The more distant of Sol's pair of ice giants.", IP)
+Pluto = Destination("Pluto", "P", "Distant, eccentric and small, this icy world is a planet whether the IAU likes it or not.", IP)
+Charon = Destination("Charon", "K", "Largest moon of Pluto, large enough to form a binary system with its primary.", Pluto) # K for 'Karon', to avoid confusion with Cronos
 
 class Picture(object):
     def __init__(self, path, alt, caption=None):
@@ -263,9 +281,28 @@ class Launch(object):
             return self.pics[0]
         return None
 
+class Flight(object):
+    def __init__(self, name, when, ac, crew, comments=None, pics=None):
+        self.name = name
+        self.date = when
+        self.ac = ac
+        if isinstance(crew, str):
+            crew = (crew,)
+        self.crew = crew
+        self.comments = comments
+        self.pics = pics
+    def add_pic(self, pic):
+        self.pics.append(pic)
+    @property
+    def launch_pic(self):
+        if self.pics:
+            return self.pics[0]
+        return None
+
 class Database(object):
-    def __init__(self, launches):
+    def __init__(self, launches, flights=None):
         self.launches = launches
+        self.flights = flights or []
         self.update()
     def add_lv(self, lv):
         self.lvs.setdefault(lv.name, {'lv': lv, 'success': 0, 'scrub': 0, 'mission_failure': 0, 'failure': 0, 'dest': {}})
@@ -311,6 +348,7 @@ class Database(object):
         self.launches_by_year = {}
         self.payloads = {}
         self.launches_by_name = {}
+        self.flights_by_name = {}
         for launch in self.launches:
             self.add_lv(launch.lv)
             lv = self.lvs[launch.lv.name]
@@ -379,6 +417,8 @@ class Database(object):
                     en['dest'][launch.dest] = en['dest'].get(launch.dest, 0) + stage.engine_count
             self.add_dest(launch.dest)
             self.launches_by_year.setdefault(launch.date.year, []).append(launch)
+        for flight in self.flights:
+            self.flights_by_name[flight.name] = flight
     @classmethod
     def flatten_tree(cls, tree):
         l = tree.keys()
@@ -626,6 +666,7 @@ class TextRenderer(Renderer):
                 {'head': desthead, 'key': 'dest', 'formatter': render_dest}]
         rows = ['=']
         for year, launches in sorted(self.db.launches_by_year.items()):
+            launches = [l for l in launches if l.result != -2]
             row = {'year': year, 'count': len(launches), 'dest': {}}
             for launch in launches:
                 row['dest'][launch.dest] = row['dest'].get(launch.dest, 0) + 1
@@ -798,8 +839,14 @@ class HtmlRenderer(Renderer):
             raise Exception("No year specified")
         year = int(year)
         title = "Launches for %d" % (year,)
-        body = [t.p[t.a(href='year?year=%d'%(year - 1,))['%d <'%(year - 1,)], ' ',
-                    t.a(href='year?year=%d'%(year + 1,))['> %d'%(year + 1,)]],
+        allyears = self.db.launches_by_year.keys()
+        prevlink = '%d <'%(year - 1,)
+        if year > min(allyears):
+            prevlink = t.a(href='year?year=%d'%(year - 1,))[prevlink]
+        nextlink = '> %d'%(year + 1,)
+        if year < max(allyears):
+            nextlink = t.a(href='year?year=%d'%(year + 1,))[nextlink]
+        body = [t.p[prevlink, ' ', nextlink],
                 self.table_launch_history(year=year)]
         return self.wrap_page(title, body)
     def render_lv_info(self, name=None):
@@ -818,6 +865,10 @@ class HtmlRenderer(Renderer):
         blocks.append(self.table_lv_families(2, 1, root=name))
         blocks.append(t.h2["Full Launch History"])
         blocks.append(self.table_launch_history(lv=name))
+        pics = [l.launch_pic for l in self.db.filter_launches(lv=name) if l.launch_pic is not None]
+        if pics:
+            blocks.append(t.h2["Image Gallery"])
+            blocks.append(self.render_image_table(pics, 6, 200))
         return self.wrap_page(title, blocks)
     def render_stage_info(self, name=None):
         if name not in self.db.stages:
@@ -860,6 +911,8 @@ class HtmlRenderer(Renderer):
         blocks.append(self.table_launch_history(engine=name))
         return self.wrap_page(title, blocks)
     def render_image_table(self, pics, per_row, size=None):
+        if len(pics) > per_row and len(pics) < per_row * 2:
+            per_row = (len(pics) + 1) / 2
         cur_row = []
         rows = [cur_row]
         for pic in pics:
@@ -872,10 +925,10 @@ class HtmlRenderer(Renderer):
             ra = []
             rb = []
             for pic in row:
-                src = 'pic?path='+urllib.quote(pic.path)
+                src = 'pic/'+pic.path
                 if size:
-                    src += '&size=%d'%(size,)
-                ra.append(t.td[t.a(href='pic?path='+urllib.quote(pic.path))[t.img(src=src, alt=pic.alt)]])
+                    src += '?size=%d'%(size,)
+                ra.append(t.td[t.a(href='pic/'+pic.path)[t.img(src=src, alt=pic.alt)]])
                 rb.append(t.td[pic.caption])
             trs.append(t.tr[ra])
             trs.append(t.tr[rb])
@@ -893,8 +946,11 @@ class HtmlRenderer(Renderer):
             blocks.append(t.p['Result: ', self.render_result(payload.launch.result)])
             blocks.append(t.p[payload.launch.comments])
         if payload.pics:
+            pics = list(payload.pics)
+            if payload.launch_pic and payload.launch_pic not in pics:
+                pics.insert(0, payload.launch_pic)
             blocks.append(t.h2["Image Gallery"])
-            blocks.append(self.render_image_table(payload.pics, 6, 200))
+            blocks.append(self.render_image_table(pics, 6, 200))
         return self.wrap_page(title, blocks)
     def render_launch_info(self, name=None):
         if name not in self.db.launches_by_name:
@@ -910,6 +966,37 @@ class HtmlRenderer(Renderer):
         if launch.pics:
             blocks.append(t.h2["Image Gallery"])
             blocks.append(self.render_image_table(launch.pics, 6, 200))
+        return self.wrap_page(title, blocks)
+    def table_flight_history(self):
+        head = t.tr[t.th["Name"], t.th["Date"], t.th["Aircraft"], t.th["Comments"]]
+        rows = []
+        for flight in self.db.flights:
+            rows.append(t.tr[t.td[t.a(href='flight?name='+urllib.quote(flight.name))[flight.name]],
+                             t.td(Class='date')[flight.date.isoformat()],
+                             t.td[flight.ac], #t.td[t.a(href='ac?name='+urllib.quote(flight.ac))[flight.ac]],
+                             t.td[flight.comments or ''],
+                             ])
+        return t.table[head, rows]
+    def render_all_flights(self):
+        title = "Aircraft Flights"
+        pics = [f.launch_pic for f in self.db.flights if f.launch_pic is not None]
+        body = [self.table_flight_history()]
+        if pics:
+            body.append(t.h2["Image Gallery"])
+            body.append(self.render_image_table(pics, 6, 200))
+        return self.wrap_page(title, body)
+    def render_flight_info(self, name=None):
+        if name not in self.db.flights_by_name:
+            raise Exception("No such flight '%s'"%(name,))
+        flight = self.db.flights_by_name[name]
+        title = "Flight '%s'"%(flight.name,)
+        blocks = [t.p['Date: ', date.isoformat(flight.date)],
+                  t.p['Vehicle: ', flight.ac], #t.a(href='ac?name='+urllib.quote(flight.ac))[flight.ac]],
+                  t.p['Crew: ', flight.crew],
+                  t.p[flight.comments or '']]
+        if flight.pics:
+            blocks.append(t.h2["Image Gallery"])
+            blocks.append(self.render_image_table(flight.pics, 6, 200))
         return self.wrap_page(title, blocks)
 
 def test_html(db):
@@ -963,11 +1050,15 @@ def serve_web(db, port):
         return os.path.commonprefix([p1, p2]) == p2
 
     class PictureResource(Page):
+        isLeaf = True
         def render_GET(self, request):
             debug = request.args.pop('debug', 0)
             try:
                 self.flatten_args(request)
-                path = request.args['path']
+                path = request.path
+                if not path.startswith('/pic/'):
+                    raise Exception("Bad path, not in /pic/ resource")
+                path = path[5:]
                 size = request.args.get('size', None)
                 if not path_in(path, '.'):
                     raise Exception("Bad path, reaches outside root")
@@ -977,7 +1068,7 @@ def serve_web(db, port):
                 if size is not None:
                     size = int(size)
                     im = Image.open(f)
-                    im.thumbnail((size, size * 100))
+                    im.thumbnail((size, size))
                     of = StringIO()
                     im.save(of, format='PNG')
                     v = of.getvalue()
@@ -1002,6 +1093,7 @@ def serve_web(db, port):
                                       t.li[t.a(href='vsf')['Upper stages']],
                                       t.li[t.a(href='bef')['Atmospheric engines']],
                                       t.li[t.a(href='vef')['Vacuum engines']],
+                                      t.li[t.a(href='flights')['Aircraft flights']],
                                       ]
                                  ]]
             request.setHeader("content-type", "text/html; charset=utf-8")
@@ -1053,12 +1145,14 @@ def serve_web(db, port):
     root.putChild('vsf', Renderer(rend.render_stage_families, 2, 1, vac=True))
     root.putChild('bef', Renderer(rend.render_engine_families, 2, 1, vac=False))
     root.putChild('vef', Renderer(rend.render_engine_families, 2, 1, vac=True))
+    root.putChild('flights', Renderer(rend.render_all_flights))
     root.putChild('lv', RendererWithArgs(rend.render_lv_info))
     root.putChild('stage', RendererWithArgs(rend.render_stage_info))
     root.putChild('engine', RendererWithArgs(rend.render_engine_info))
     root.putChild('year', RendererWithArgs(rend.launches_for_year))
     root.putChild('payload', RendererWithArgs(rend.render_payload_info))
     root.putChild('launch', RendererWithArgs(rend.render_launch_info))
+    root.putChild('flight', RendererWithArgs(rend.render_flight_info))
     root.putChild('pic', PictureResource())
     ep = "tcp:%d"%(port,)
     endpoints.serverFromString(reactor, ep).listen(server.Site(root))
