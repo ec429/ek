@@ -508,6 +508,16 @@ class Database(object):
                 return False
             return True
         return filter(do_filter, self.launches)
+    def filter_flights(self, ac=None, crew=None, year=None):
+        def do_filter(f):
+            if ac not in (f.ac, None):
+                return False
+            if crew not in f.crew + (None,):
+                return False
+            if year not in (str(f.date.year), None):
+                return False
+            return True
+        return filter(do_filter, self.flights)
 
 class Renderer(object):
     def __init__(self, db):
@@ -967,20 +977,28 @@ class HtmlRenderer(Renderer):
             blocks.append(t.h2["Image Gallery"])
             blocks.append(self.render_image_table(launch.pics, 6, 200))
         return self.wrap_page(title, blocks)
-    def table_flight_history(self):
+    def table_flight_history(self, flights):
         head = t.tr[t.th["Name"], t.th["Date"], t.th["Aircraft"], t.th["Comments"]]
         rows = []
-        for flight in self.db.flights:
+        for flight in flights:
             rows.append(t.tr[t.td[t.a(href='flight?name='+urllib.quote(flight.name))[flight.name]],
                              t.td(Class='date')[flight.date.isoformat()],
-                             t.td[flight.ac], #t.td[t.a(href='ac?name='+urllib.quote(flight.ac))[flight.ac]],
+                             t.td[t.a(href='flights?ac='+urllib.quote(flight.ac))[flight.ac]],
                              t.td[flight.comments or ''],
                              ])
         return t.table[head, rows]
-    def render_all_flights(self):
+    def render_flights(self, **kwargs):
         title = "Aircraft Flights"
-        pics = [f.launch_pic for f in self.db.flights if f.launch_pic is not None]
-        body = [self.table_flight_history()]
+        flights = self.db.filter_flights(**kwargs)
+        pics = [f.launch_pic for f in flights if f.launch_pic is not None]
+        body = []
+        if 'ac' in kwargs:
+            body.append(t.p["by ", kwargs['ac']])
+        if 'crew' in kwargs:
+            body.append(t.p["with ", kwargs['crew']])
+        if 'year' in kwargs:
+            body.append(t.p["during ", kwargs['year']])
+        body.append(self.table_flight_history(flights))
         if pics:
             body.append(t.h2["Image Gallery"])
             body.append(self.render_image_table(pics, 6, 200))
@@ -990,9 +1008,11 @@ class HtmlRenderer(Renderer):
             raise Exception("No such flight '%s'"%(name,))
         flight = self.db.flights_by_name[name]
         title = "Flight '%s'"%(flight.name,)
+        def render_crew(name):
+            return t.a(href='flights?crew='+urllib.quote(name))[name]
         blocks = [t.p['Date: ', date.isoformat(flight.date)],
-                  t.p['Vehicle: ', flight.ac], #t.a(href='ac?name='+urllib.quote(flight.ac))[flight.ac]],
-                  t.p['Crew: ', flight.crew],
+                  t.p['Vehicle: ', t.a(href='flights?ac='+urllib.quote(flight.ac))[flight.ac]],
+                  t.h3['Crew'], t.ul[[t.li[render_crew(name)] for name in flight.crew]],
                   t.p[flight.comments or '']]
         if flight.pics:
             blocks.append(t.h2["Image Gallery"])
@@ -1145,7 +1165,7 @@ def serve_web(db, port):
     root.putChild('vsf', Renderer(rend.render_stage_families, 2, 1, vac=True))
     root.putChild('bef', Renderer(rend.render_engine_families, 2, 1, vac=False))
     root.putChild('vef', Renderer(rend.render_engine_families, 2, 1, vac=True))
-    root.putChild('flights', Renderer(rend.render_all_flights))
+    root.putChild('flights', RendererWithArgs(rend.render_flights))
     root.putChild('lv', RendererWithArgs(rend.render_lv_info))
     root.putChild('stage', RendererWithArgs(rend.render_stage_info))
     root.putChild('engine', RendererWithArgs(rend.render_engine_info))
